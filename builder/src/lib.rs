@@ -4,6 +4,41 @@ use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields};
 use syn::spanned::Spanned;
 use syn::__private::{Span, TokenStream2};
 
+fn get_build_method(data: &Data, name: &Ident) -> TokenStream2 {
+    match *data {
+        Data::Struct(ref data) => {
+            match data.fields {
+                Fields::Named(ref fields) => {
+                    let build = fields.named.iter().map(|f| {
+                        let name = &f.ident;
+                        quote_spanned! {f.span()=>
+                            #name: match self.#name {
+                                None => {
+                                     return Err(Box::new("No".into()) )
+                                },
+                                Some(#name) => {
+                                    #name
+                                }
+                            },
+                        }
+                    });
+                    quote! {
+                        pub fn build(&mut self) -> Result<#name, Box<dyn std::error::Error>> {
+                            Ok(#name {
+                                #(#build)*
+                            })
+                        }
+                   }
+                }
+                Fields::Unnamed(_) => { unimplemented!() }
+                Fields::Unit => { unimplemented!() }
+            }
+        }
+        Data::Enum(_) => { unimplemented!()}
+        Data::Union(_) => { unimplemented!()}
+    }
+}
+
 fn get_builder_impl(data: &Data) -> TokenStream2 {
     match *data {
         Data::Struct(ref data) => {
@@ -21,8 +56,7 @@ fn get_builder_impl(data: &Data) -> TokenStream2 {
                         }
                     });
                     quote! {
-                       #(#impls
-                        )*
+                       #(#impls)*
                    }
                 }
                 Fields::Unnamed(_) => { unimplemented!() }
@@ -82,10 +116,11 @@ fn get_empty_builder(data: &Data) -> TokenStream2 {
 #[proc_macro_derive(Builder)]
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
+    let name = input.ident;
     let empty_builder = get_empty_builder(&input.data);
     let builder_defn = get_builder_definition(&input.data);
     let builder_impl = get_builder_impl(&input.data);
-    let name = input.ident;
+    let build_method = get_build_method(&input.data, &name);
     let builder = format!("{}Builder", name);
     let builder_name = Ident::new(&builder, Span::call_site());
     let tokens = quote! {
@@ -103,6 +138,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
         
         impl #builder_name {
             #builder_impl
+        }
+        
+        impl #builder_name {
+            #build_method
         }
     };
     TokenStream::from(tokens)
