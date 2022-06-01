@@ -6,6 +6,8 @@
 // To run the code:
 //     $ cargo run
 
+//fn main() {}
+
 use derive_builder::Builder;
 
 #[derive(Builder)]
@@ -15,7 +17,6 @@ pub struct Command {
     env: Vec<String>,
     current_dir: String,
 }
-
 fn main() {
     let mut builder = Command::builder();
     builder.executable("cargo".to_owned());

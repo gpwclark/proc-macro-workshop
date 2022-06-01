@@ -9,21 +9,35 @@ fn get_build_method(data: &Data, name: &Ident) -> TokenStream2 {
         Data::Struct(ref data) => {
             match data.fields {
                 Fields::Named(ref fields) => {
+                    let check_err = fields.named.iter().map(|f| {
+                        let name = &f.ident;
+                        let name_string = match name {
+                            None => {"".into()}
+                            Some(name) => {
+                                format!("{}", name)
+                            }
+                        };
+                        quote_spanned! {f.span()=>
+                            let #name = match self.#name {
+                                None => {
+                                    let mut err_string = format!("{}", #name_string);
+                                    err_string += " is unset!";
+                                    let err_string: Box<dyn ::std::error::Error> = err_string.into();
+                                    return Err(err_string);
+                                },
+                                Some(ref #name) => { #name.to_owned() }
+                            };
+                        }
+                    });
                     let build = fields.named.iter().map(|f| {
                         let name = &f.ident;
                         quote_spanned! {f.span()=>
-                            #name: match self.#name {
-                                None => {
-                                     return Err(Box::new("No".into()) )
-                                },
-                                Some(#name) => {
-                                    #name
-                                }
-                            },
+                            #name: #name,
                         }
                     });
                     quote! {
-                        pub fn build(&mut self) -> Result<#name, Box<dyn std::error::Error>> {
+                        pub fn build(&mut self) -> Result<#name, Box<dyn ::std::error::Error>> {
+                            #(#check_err)*
                             Ok(#name {
                                 #(#build)*
                             })
@@ -138,9 +152,6 @@ pub fn derive(input: TokenStream) -> TokenStream {
         
         impl #builder_name {
             #builder_impl
-        }
-        
-        impl #builder_name {
             #build_method
         }
     };
