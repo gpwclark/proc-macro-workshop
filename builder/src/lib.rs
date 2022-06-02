@@ -1,8 +1,38 @@
 use proc_macro::TokenStream;
 use quote::{quote, quote_spanned};
-use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields};
+use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields, Type, PathArguments, Field, GenericArgument};
 use syn::spanned::Spanned;
 use syn::__private::{Span, TokenStream2};
+
+fn get_optional_build_method(f: &Field) -> Option<&GenericArgument> {
+    let ty = &f.ty;
+    match ty {
+        Type::Path(ref type_path) => {
+            if type_path.path.segments.len() == 1 {
+                let path_segment = &type_path.path.segments.first().unwrap();
+                let ident = &path_segment.ident;
+                if ident == "Option" {
+                    match &path_segment.arguments {
+                        PathArguments::AngleBracketed(args) => {
+                            if args.args.len() == 1 {
+                                let ty = args.args.first().unwrap();
+                                Some(ty)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => { None }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        _ => { None }
+    }
+}
 
 fn get_build_method(data: &Data, name: &Ident) -> TokenStream2 {
     match *data {
@@ -17,16 +47,23 @@ fn get_build_method(data: &Data, name: &Ident) -> TokenStream2 {
                                 format!("{}", name)
                             }
                         };
-                        quote_spanned! {f.span()=>
-                            let #name = match self.#name {
-                                None => {
-                                    let mut err_string = format!("{}", #name_string);
-                                    err_string += " is unset!";
-                                    let err_string: Box<dyn ::std::error::Error> = err_string.into();
-                                    return Err(err_string);
-                                },
-                                Some(ref #name) => { #name.to_owned() }
-                            };
+                        let is_option_arg = get_optional_build_method(&f);
+                        if is_option_arg.is_none() {
+                            quote_spanned! {f.span()=>
+                                let #name = match self.#name {
+                                    None => {
+                                        let mut err_string = format!("{}", #name_string);
+                                        err_string += " is unset!";
+                                        let err_string: Box<dyn ::std::error::Error> = err_string.into();
+                                        return Err(err_string);
+                                    },
+                                    Some(ref #name) => { #name.to_owned() }
+                                };
+                            }
+                        } else {
+                            quote_spanned! {f.span()=>
+                                let #name = self.#name.clone().unwrap();
+                            }
                         }
                     });
                     let build = fields.named.iter().map(|f| {
@@ -61,12 +98,21 @@ fn get_builder_impl(data: &Data) -> TokenStream2 {
                     let impls = fields.named.iter().map(|f| {
                         let name = &f.ident;
                         let ty = &f.ty;
-                        quote_spanned! {f.span()=>
-                            fn #name(&mut self, #name: #ty) -> &mut Self {
-                                self.#name = Some(#name);
-                                self
+                        match get_optional_build_method(&f)  {
+                            Some(GenericArgument::Type(ty)) => {
+                                quote_spanned! {f.span()=>
+                                    fn #name(&mut self, #name: #ty) -> &mut Self {
+                                        self.#name = Some(#name);
+                                        self
+                                    }
+                                }}
+                            _ => {
+                                quote_spanned! {f.span()=>
+                                    fn #name(&mut self, #name: #ty) -> &mut Self {
+                                        self.#name = Some(#name);
+                                        self
+                                    }}
                             }
-                            
                         }
                     });
                     quote! {
@@ -90,7 +136,11 @@ fn get_builder_definition(data: &Data) -> TokenStream2 {
                     let defn = fields.named.iter().map(|f| {
                         let name = &f.ident;
                         let ty = &f.ty;
-                        quote! { #name: Option<#ty> }
+                        if get_optional_build_method(&f).is_none() {
+                            quote! { #name: Option<#ty> }
+                        } else {
+                            quote! { #name: #ty }
+                        }
                     });
                     quote! {
                        #(#defn,)*
