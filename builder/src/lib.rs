@@ -62,14 +62,14 @@ fn get_build_method(data: &Data, name: &Ident) -> TokenStream2 {
                             }
                         } else {
                             quote_spanned! {f.span()=>
-                                let #name = self.#name.clone().unwrap();
+                                let #name = self.#name.clone();
                             }
                         }
                     });
                     let build = fields.named.iter().map(|f| {
                         let name = &f.ident;
                         quote_spanned! {f.span()=>
-                            #name: #name,
+                            #name,
                         }
                     });
                     quote! {
