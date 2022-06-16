@@ -1,13 +1,10 @@
 use proc_macro::TokenStream;
-use std::any::Any;
 use std::error::Error;
 use std::fmt;
-use quote::{quote, quote_spanned, ToTokens};
-use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields, Type, PathArguments, Field, GenericArgument, Meta, NestedMeta, PathSegment};
+use quote::{quote, quote_spanned};
+use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields, Type, PathArguments, Field, GenericArgument, Meta, NestedMeta, Lit};
 use syn::spanned::Spanned;
 use syn::__private::{Span, TokenStream2};
-use syn::punctuated::Punctuated;
-use syn::token::{Colon2, Comma, Paren};
 
 fn get_inner_type<'a>(f: &'a Field, type_name: &str) -> Option<&'a GenericArgument> {
     let ty = &f.ty;
@@ -118,6 +115,40 @@ impl Error for BuilderError {
     }
 }
 
+fn get_builder_attribute_name(f: &Field) -> Option<String> {
+    if let Some(attr) = f.attrs.first() {
+        if attr.path.segments.first().unwrap().ident == "builder" {
+            match attr.parse_meta() {
+                Ok(Meta::List(meta)) => {
+                    for x in meta.nested {
+                        match x {
+                            NestedMeta::Meta(y) => {
+                                match y {
+                                    Meta::Path(_) => {}
+                                    Meta::List(_) => {}
+                                    Meta::NameValue(pair) => {
+                                        let lit = pair.lit;
+                                        match lit {
+                                            Lit::Str(partial_name) => {
+                                                return Some(partial_name.value());
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                            NestedMeta::Lit(_) => {}
+                        }
+                    }
+                },
+                _ => {
+                }
+            }
+        }
+    }
+    None
+}
+
 fn get_builder_impl(data: &Data) -> Result<TokenStream2, BuilderError> {
     match *data {
         Data::Struct(ref data) => {
@@ -127,59 +158,34 @@ fn get_builder_impl(data: &Data) -> Result<TokenStream2, BuilderError> {
                     for f in fields.named.iter() {
                         let name = &f.ident;
                         let ty = &f.ty;
-                        if let Some(attr) = &f.attrs.first() {
-                            if attr.path.segments.first().unwrap().ident == "builder" {
-                                match attr.parse_meta() {
-                                    Ok(Meta::List(meta)) => {
-                                                let partial_name = &meta.path.segments.first().clone().unwrap();
-                                                    //.clone().unwrap().ident;
-                                                things.push(quote_spanned! {f.span()=>
-                                                    /// #partial_name
-                                                    fn #partial_name(&mut self, #partial_name: #ty) -> &mut Self {
-                                                        if let Some(#name) = self.#name {
-                                                            #name.push(#partial_name);
-                                                        } else {
-                                                            self.#name = Some(vec![#partial_name]);
-                                                        }
-                                                        self
-                                                    }});
-                                        let mut partial_name = &meta.path.segments[0].ident;
-                                        match get_inner_type(&f, "Vec") {
-                                            Some(GenericArgument::Type(inner_ty)) => {
-                                                things.push(quote_spanned! {f.span()=>
-                                                    fn #partial_name(&mut self, #partial_name: #inner_ty) -> &mut Self {
-                                                        if let Some(#name) = self.#name {
-                                                            #name.push(#partial_name);
-                                                        } else {
-                                                            self.#name = Some(vec![#partial_name]);
-                                                        }
-                                                        self
-                                                    }});
-                                            },
-                                            _ => things.push(quote_spanned!{f.span()=> 
-                                                fn #name(&mut self, #name: #ty) -> &mut Self {
-                                                    let #name = "Type Vec must have type argument.";
-                                                    self
-                                                }
-                                            }),
-                                        }
-                                    },
-                                    _ => {
-                                        things.push(quote_spanned!{f.span()=> 
-                                            fn #name(&mut self, #name: #ty) -> &mut Self {
-                                                let #name = "Non name value meta.";
-                                                self
+                        let fn_name = get_builder_attribute_name(&f);
+                        if let Some(fn_name) = fn_name {
+                            let item_name = "item_".to_string() + &fn_name;
+                            let item_name = Ident::new(&item_name, Span::call_site());
+                            let fn_name = Ident::new(&fn_name, Span::call_site());
+                            match get_inner_type(&f, "Vec") {
+                                Some(GenericArgument::Type(ty)) => {
+                                    things.push(quote_spanned! {f.span()=>
+                                        fn #fn_name(&mut self, #item_name: #ty) -> &mut Self {
+                                            if let Some(ref mut #name) = self.#name {
+                                                #name.push(#item_name);
+                                            } else {
+                                                self.#name = Some(vec![#item_name]);
                                             }
-                                        });
-                                    }
-                                }
-                            } else {
-                                things.push(quote_spanned!{f.span()=> 
-                                        fn #name(&mut self, #name: #ty) -> &mut Self {
-                                            let #name = "Can only parse builder attribute.";
                                             self
-                                        }
-                                    });
+                                        }});
+                                }
+                                _ => {
+                                    things.push(quote_spanned! {f.span()=>
+                                        fn #fn_name(&mut self, #item_name: #ty) -> &mut Self {
+                                            if let Some(#item_name) = self.#name {
+                                                self.name.push(#item_name);
+                                            } else {
+                                                self.#name = Some(vec![#item_name]);
+                                            }
+                                            self
+                                        }});
+                                }
                             }
                         } else {
                             match get_inner_type(&f, "Option") {
@@ -204,12 +210,14 @@ fn get_builder_impl(data: &Data) -> Result<TokenStream2, BuilderError> {
                        #(#things)*
                    })
                 }
-                Fields::Unnamed(_) => { unimplemented!() }
-                Fields::Unit => { unimplemented!() }
+                _ => {
+                    Err(BuilderError::new("Not implemented for field type."))
+                }
             }
         }
-        Data::Enum(_) => { unimplemented!()}
-        Data::Union(_) => { unimplemented!()}
+        _ => { 
+            Err(BuilderError::new("Not implemented for type."))
+        }
     }
 }
 
